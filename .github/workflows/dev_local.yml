@@ -1,0 +1,36 @@
+name: Deploy Serverless SteamDevLocal
+
+on:
+  push:
+    branches:
+      - dev_local
+
+jobs:
+  deploy:
+    name: deploy
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [16.x]
+    steps:
+      - uses: actions/checkout@v3
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ matrix.node-version }}
+      - name: npm install, build, and test example
+        run: |
+          npm install --production=false
+      - name: Build Layer 1
+        run: |
+          cd layers/axios/nodejs
+          npm install --production=false
+          cd ..
+          zip -r ../../layer-dist/layer1.zip nodejs/package.json nodejs/package-lock.json nodejs/node_modules
+      - name: serverless deploy
+        uses: serverless/github-action@v3.1
+        with:
+          args: deploy --stage dev-local
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.steam_aws_access_key_id }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.steam_aws_secret_access_key }}

@@ -1,0 +1,12 @@
+{
+    "compilerOptions": {
+      "types": ["express"],
+      "target": "ES6",
+      "outDir": "dist",
+      "module": "commonjs",
+      "sourceMap": true,
+      "isolatedModules": false,
+      "allowSyntheticDefaultImports": true
+      
+    }
+  }

@@ -1,0 +1,22 @@
+# package directories
+node_modules/
+jspm_packages
+
+# Serverless directories
+.serverless
+.DS_Store
+# Settings
+.vscode
+*.env
+.serverless
+package-lock.json
+#files
+dist/
+test.js
+src/.DS_Store
+.DS_Store
+.DS_Store
+.env
+yarn.lock
+package-lock.json
+.scannerwork

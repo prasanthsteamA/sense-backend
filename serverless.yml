@@ -1,0 +1,839 @@
+service: ev-backend-sls-app
+
+custom:
+  # esbuild:
+  #   bundle: true
+  #   minify: false
+  prune: # This is used to remove unwanted Lambda versions to reduce the lambda buid size
+    retain: 10
+  domain_test: test-ev-zeon-backend
+  domain_dev: dev-ev-steama-backend
+  domain_staging: staging-ev-steama-backend
+  domain_dev-local: dev-local-ev-steama-backend
+  domain_zeonstaging: zeonstaging-ev-steama-backend
+  domain_prod: prod-ev-zeon-backend
+  userPoolName: "EVBackendUserPool${opt:stage}"
+  publicBucketName: "steam-a-evbackend-public-${opt:stage}"
+  privateBucketName: "steam-a-evbackend-private-${opt:stage}"
+  messageBrokerName: "ev-mq-${opt:stage}"
+  allowed-headers:
+    - Content-Type
+    - X-Amz-Date
+    - Authorization
+    - X-Api-Key
+    - X-Amz-Security-Token
+    - X-Amz-User-Agent
+    - Content-Length
+  authorizer:
+    cognito_authorizer:
+      name: cognito_authorizer
+      type: COGNITO_USER_POOLS
+      arn:
+        Fn::GetAtt:
+          - cognitoUserPool
+          - Arn
+
+provider:
+  name: aws
+  runtime: nodejs16.x
+  stage: ${opt:stage, 'dev'}
+  region: ap-south-1
+  environment:
+    PUBLIC_BUCKET_NAME: ${self:custom.publicBucketName}
+    PRIVATE_BUCKET_NAME: ${self:custom.privateBucketName}
+    STAGE: ${self:provider.stage}
+    # TWILIO_BASE64: ${ssm:/ev-backend/twilio_base64}
+    # TWILIO_SID: ${ssm:/ev-backend/twilio_sid}
+    # TWILIO_SECRET: ${ssm:/ev-backend/twilio_secret}
+    masterOtp: ${ssm:/ev-backend/${opt:stage}/master_otp}
+    OCPP_IP: ${ssm:/ev-backend/${opt:stage}/ocpp_socket_end_point}
+    DB_USER: ${ssm:/ev-backend/${opt:stage}/user}
+    PASSWORD: ${ssm:/ev-backend/${opt:stage}/password}
+    HOST: ${ssm:/ev-backend/${opt:stage}/host}
+    DB_PORT: ${ssm:/ev-backend/${opt:stage}/port}
+    DATABASE: ${ssm:/ev-backend/${opt:stage}/database}
+    SMS_KEY: ${ssm:/ev-backend/${opt:stage}/sms_key}
+    SMS_SENDER: ${ssm:/ev-backend/${opt:stage}/sms_sender}
+    OTP_SMS_SENDER: ${ssm:/ev-backend/otp/sms_sender}
+    OTP_SMS_KEY: ${ssm:/ev-backend/otp/sms_key}
+    CREATE_AUTH_CHALLENGE_OTP: ${ssm:/ev-backend/create_auth_challenge_otp}
+    RESET_PASSWORD_PAGE_URL: ${ssm:/ev-backend/${opt:stage}/reset_password_page_url}
+    LOGIN_PAGE_URL: ${ssm:/ev-backend/${opt:stage}/login_page_url}
+    API_URL: ${ssm:/ev-backend/${opt:stage}/api_url}
+    PAYMENT_MID: ${ssm:/ev-backend/${opt:stage}/payment_mid}
+    PAYMENT_MERCHANT_KEY: ${ssm:/ev-backend/${opt:stage}/payment_merchant_key}
+    PAYMENT_WEBSITE: ${ssm:/ev-backend/${opt:stage}/payment_website}
+    PAYMENT_CALLBACK_URL: ${cf:ev-backend-sls-app-${opt:stage}.ServiceEndpoint}/api/v1/wallet/payment/callback
+    PAYMENT_ENDPOINT: ${ssm:/ev-backend/${opt:stage}/payment_endpoint}
+    # JSREPORT_SERVER_URL: ${ssm:/ev-backend/${opt:stage}/jsreport_url}
+    JSREPORT_SERVER_URL: ${ssm:/ev-backend/jsreport_url}
+    FROM_EMAIL_ID: ${ssm:/ev-backend/${opt:stage}/from_email_id}
+    GSTIN_SUBSCRIPTION_KEY: ${ssm:/ev-backend/${opt:stage}/gst_subscription}
+    NODE_ENV: ${ssm:/ev-backend/${opt:stage}/node_env}
+    FB_TYPE: ${ssm:/ev-backend/fb_type}
+    FB_PROJECT_ID: ${ssm:/ev-backend/fb_project_id}
+    FB_PRIVATE_KEY_ID: ${ssm:/ev-backend/fb_private_key_id}
+    FB_PRIVATE_KEY: ${ssm:/ev-backend/fb_private_key}
+    FB_CLIENT_EMAIL: ${ssm:/ev-backend/fb_client_email}
+    FB_CLIENT_ID: ${ssm:/ev-backend/fb_client_id}
+    FB_AUTH_URL: ${ssm:/ev-backend/fb_auth_url}
+    FB_TOKEN_URI: ${ssm:/ev-backend/fb_token_url}
+    FB_AUTH_PROVIDER_X509_CERT_URL: ${ssm:/ev-backend/fb_auth_provider_x509_cert_url}
+    FB_CLIENT_x509_CERT_URL: ${ssm:/ev-backend/fb_client_x509_cert_url}
+    FB_UNIVERSE_DOMAIN: ${ssm:/ev-backend/fb_universe_domain}
+    RAZORPAY_KEY_SECRET: ${ssm:/ev-backend/${opt:stage}/razorpay_key_secret}
+    RAZORPAY_KEY_ID: ${ssm:/ev-backend/${opt:stage}/razorpay_key_id}
+    # SECURITY_GROUP: ${ssm:/ev-backend/security_group}
+    # SUBNET_1: ${ssm:/ev-backend/subnet_1}
+    # SUBNET_2: ${ssm:/ev-backend/subnet_2}
+    # SUBNET_3: ${ssm:/ev-backend/subnet_3}
+    # SUBNET_4: ${ssm:/ev-backend/subnet_4}
+
+  apiGateway:
+    binaryMediaTypes: # Specify binary media types here
+      - multipart/form-data
+package:
+  include:
+    - config/serviceAccountKey.json
+  patterns:
+    - "!.serverless"
+    - "!.env"
+    - "!test.js"
+    - "!gitignore"
+    - "!package-lock.json"
+    - "!node_modules/.cache/**"
+layers:
+  preBuilt:
+    package:
+      artifact: layer-dist/layer1.zip
+
+functions:
+  pb_processor:
+    handler: dist/triggers/pbProcessor.handler
+    timeout: 300
+    events:
+      - rabbitmq:
+          arn: !GetAtt RabbitMQBroker.Arn
+          queue: metervalue_queue
+          basicAuthArn: ${ssm:/ev-backend/basic_auth_arn}
+          existing: true
+    environment:
+      MQ_METERVALUE_URL: "${cf:ev-backend-sls-app-${opt:stage}.ServiceEndpoint}/api/v1/messagequeue/metervalue"
+      MQ_SoC_URL: "${cf:ev-backend-sls-app-${opt:stage}.ServiceEndpoint}/api/v1/messagequeue/soc"
+    # vpc:
+    #   securityGroupIds:
+    #     - ${ssm:/ev-backend/security_group}
+    #   subnetIds:
+    #     - ${ssm:/ev-backend/subnet_1}
+    #     - ${ssm:/ev-backend/subnet_2}
+    #     - ${ssm:/ev-backend/subnet_3}
+    #     - ${ssm:/ev-backend/subnet_4}
+  # hb_processor:
+  #   handler: dist/triggers/hbProcessor.handler
+  #   timeout: 300
+  #   events:
+  #     - rabbitmq:
+  #         arn: !GetAtt RabbitMQBroker.Arn
+  #         queue: heartbeat_queue
+  #         basicAuthArn: ${ssm:/ev-backend/basic_auth_arn}
+  #         existing: true
+  #   environment:
+  #     MQ_HEARTBEAT_URL : "${cf:ev-backend-sls-app-${opt:stage}.ServiceEndpoint}/api/v1/messagequeue/heartbeat"
+  # vpc:
+  #   securityGroupIds:
+  #     - ${ssm:/ev-backend/security_group}
+  #   subnetIds:
+  #     - ${ssm:/ev-backend/subnet_1}
+  #     - ${ssm:/ev-backend/subnet_2}
+  #     - ${ssm:/ev-backend/subnet_3}
+  #     - ${ssm:/ev-backend/subnet_4}
+  define_auth_challenge:
+    handler: dist/triggers/cognito/define_auth_challenge.handler
+    timeout: 300
+    iamRoleStatementsInherit: true
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - "cognito-idp:AdminUserGlobalSignOut"
+          - "cognito-idp:AddCustomAttributes"
+          - "cognito-idp:AdminCreateUser"
+          - "cognito-idp:AdminSetUserPassword"
+          - "cognito-idp:AdminSetUserSettings"
+          - "cognito-idp:AdminAddUserToGroup"
+          - "cognito-idp:GetGroup"
+          - "cognito-idp:AdminGetUser"
+          - "cognito-idp:AdminConfirmSignUp"
+          - "cognito-idp:AdminEnableUser"
+          - "cognito-idp:AdminListUserAuthEvents"
+          - "cognito-idp:UpdateGroup"
+          - "cognito-idp:AdminDisableUser"
+          - "cognito-idp:AdminRemoveUserFromGroup"
+          - "cognito-idp:AdminResetUserPassword"
+        Resource: "*"
+    events:
+      - cognitoUserPool:
+          pool: ${self:custom.userPoolName}
+          trigger: DefineAuthChallenge
+          existing: true
+    # vpc:
+    #   securityGroupIds:
+    #     - ${ssm:/ev-backend/security_group}
+    #   subnetIds:
+    #     - ${ssm:/ev-backend/subnet_1}
+    #     - ${ssm:/ev-backend/subnet_2}
+    #     - ${ssm:/ev-backend/subnet_3}
+    #     - ${ssm:/ev-backend/subnet_4}
+  create_auth_challenge:
+    handler: dist/triggers/cognito/create_auth_challenge.handler
+    timeout: 300
+    iamRoleStatementsInherit: true
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - "cognito-idp:AdminUserGlobalSignOut"
+          - "cognito-idp:AddCustomAttributes"
+          - "cognito-idp:AdminCreateUser"
+          - "cognito-idp:AdminSetUserPassword"
+          - "cognito-idp:AdminSetUserSettings"
+          - "cognito-idp:AdminAddUserToGroup"
+          - "cognito-idp:GetGroup"
+          - "cognito-idp:AdminGetUser"
+          - "cognito-idp:AdminConfirmSignUp"
+          - "cognito-idp:AdminEnableUser"
+          - "cognito-idp:AdminListUserAuthEvents"
+          - "cognito-idp:UpdateGroup"
+          - "cognito-idp:AdminDisableUser"
+          - "cognito-idp:AdminRemoveUserFromGroup"
+          - "cognito-idp:AdminResetUserPassword"
+        Resource: "*"
+    events:
+      - cognitoUserPool:
+          pool: ${self:custom.userPoolName}
+          trigger: CreateAuthChallenge
+          existing: true
+    # vpc:
+    #   securityGroupIds:
+    #     - ${ssm:/ev-backend/security_group}
+    #   subnetIds:
+    #     - ${ssm:/ev-backend/subnet_1}
+    #     - ${ssm:/ev-backend/subnet_2}
+    #     - ${ssm:/ev-backend/subnet_3}
+    #     - ${ssm:/ev-backend/subnet_4}
+  cleanIdleConnections:
+    handler: dist/triggers/cleanIdleConnections.handler
+    timeout: 300
+    layers:
+      - { Ref: PreBuiltLambdaLayer }
+    events:
+      - schedule:
+          name: cleanIdleConnections-${opt:stage}
+          description: Trigger the Lambda function every 30 Mints
+          rate: cron(0/5 * * * ? *)
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - logs:CreateLogGroup
+          - logs:CreateLogStream
+          - logs:PutLogEvents
+        Resource: arn:aws:logs:*:*:/aws/lambda/cleanIdleConnections-*
+
+  deleteOcppMessageLog:
+    handler: dist/triggers/deleteOcppMessageLog.handler
+    timeout: 300
+    layers:
+      - { Ref: PreBuiltLambdaLayer }
+    events:
+      - schedule:
+          name: deleteOcppMessageLog-${opt:stage}
+          description: Trigger the Lambda function daily at 3:30 AM
+          rate: cron(30 3 * * ? *)
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - logs:CreateLogGroup
+          - logs:CreateLogStream
+          - logs:PutLogEvents
+        Resource: arn:aws:logs:*:*:/aws/lambda/deleteOcppMessageLog-*
+
+  analytics-cron-job:
+    handler: dist/triggers/index.handler
+    layers:
+      - { Ref: PreBuiltLambdaLayer }
+    events:
+      - schedule:
+          name: analytics-cron-job-${opt:stage}
+          description: Trigger the Lambda function at 4:00 AM UTC every day
+          rate: cron(58 22 * * ? *)
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - logs:CreateLogGroup
+          - logs:CreateLogStream
+          - logs:PutLogEvents
+        Resource: arn:aws:logs:*:*:/aws/lambda/analytics-cron-job-*
+    environment:
+      ANALYTICS_URL: "${cf:ev-backend-sls-app-${opt:stage}.ServiceEndpoint}/api/v1/generate-analytics"
+    # vpc:
+    #   securityGroupIds:
+    #     - ${ssm:/ev-backend/security_group}
+    #   subnetIds:
+    #     - ${ssm:/ev-backend/subnet_1}
+    #     - ${ssm:/ev-backend/subnet_2}
+    #     - ${ssm:/ev-backend/subnet_3}
+    #     - ${ssm:/ev-backend/subnet_4}
+  # team-invoice-cron-job:
+  #   handler: dist/triggers/teamInvoiceCron.handler
+  #   layers:
+  #     - { Ref: PreBuiltLambdaLayer }
+  #   events:
+  #     - schedule:
+  #         name: team-invoice-cron-job-${opt:stage}
+  #         description: Trigger the Lambda function at 12:05 AM UTC every day
+  #         rate: cron(5 0 * * ? *)
+  #   iamRoleStatements:
+  #     - Effect: Allow
+  #       Action:
+  #         - logs:CreateLogGroup
+  #         - logs:CreateLogStream
+  #         - logs:PutLogEvents
+  #       Resource: arn:aws:logs:*:*:/aws/lambda/team-invoice-cron-job-*
+  #   environment:
+  #     TEAM_INVOICE_URL: "${cf:ev-backend-sls-app-${opt:stage}.ServiceEndpoint}/api/v1/teams/invoice-generate"
+    # vpc:
+    #   securityGroupIds:
+    #     - ${ssm:/ev-backend/security_group}
+    #   subnetIds:
+    #     - ${ssm:/ev-backend/subnet_1}
+    #     - ${ssm:/ev-backend/subnet_2}
+    #     - ${ssm:/ev-backend/subnet_3}
+    #     - ${ssm:/ev-backend/subnet_4}
+  downtime-cron-job:
+    handler: dist/triggers/downtime.handler
+    layers:
+      - { Ref: PreBuiltLambdaLayer }
+    events:
+      - schedule:
+          name: downtime-cron-job-${opt:stage}
+          description: Trigger the Lambda function every hour
+          rate: cron(0 0-23/1 * * ? *)
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - logs:CreateLogGroup
+          - logs:CreateLogStream
+          - logs:PutLogEvents
+        Resource: arn:aws:logs:*:*:/aws/lambda/downtime-cron-job-*
+    environment:
+      CHARGER_DOWNTIME_URL: "${cf:ev-backend-sls-app-${opt:stage}.ServiceEndpoint}/api/v1/charger-downtime"
+  # vpc:
+  #   securityGroupIds:
+  #     - ${ssm:/ev-backend/security_group}
+  #   subnetIds:
+  #     - ${ssm:/ev-backend/subnet_1}
+  #     - ${ssm:/ev-backend/subnet_2}
+  #     - ${ssm:/ev-backend/subnet_3}
+  #     - ${ssm:/ev-backend/subnet_4}
+  pmt-cron-job:
+    handler: dist/triggers/pmtcronjob.handler
+    layers:
+      - { Ref: PreBuiltLambdaLayer }
+    events:
+      - schedule:
+          name: pmt-cron-job-${opt:stage}
+          description: Trigger the Lambda function every 10 minutes
+          rate: rate(30 minutes)  # Updated for 30-minute interval
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - logs:CreateLogGroup
+          - logs:CreateLogStream
+          - logs:PutLogEvents
+        Resource: arn:aws:logs:*:*:/aws/lambda/pmt-cron-job-*
+    environment:
+      PAYMENT_STATUS_URL: "${cf:ev-backend-sls-app-${opt:stage}.ServiceEndpoint}/api/v1/wallet/payment/status-update"
+    # vpc:
+    #   securityGroupIds:
+    #     - ${ssm:/ev-backend/security_group}
+    #   subnetIds:
+    #     - ${ssm:/ev-backend/subnet_1}
+    #     - ${ssm:/ev-backend/subnet_2}
+    #     - ${ssm:/ev-backend/subnet_3}
+    #     - ${ssm:/ev-backend/subnet_4}
+  stp-intp-job:
+    handler: dist/triggers/stopIntp.handler
+    layers:
+      - { Ref: PreBuiltLambdaLayer }
+    events:
+      - schedule:
+          name: stp-intp-job-${opt:stage}
+          description: Trigger the Lambda function every hour
+          rate: cron(0 0-23/1 * * ? *)
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - logs:CreateLogGroup
+          - logs:CreateLogStream
+          - logs:PutLogEvents
+        Resource: arn:aws:logs:*:*:/aws/lambda/stp-intp-job-*
+    environment:
+      STOP_INTERRUPTED_URL: "${cf:ev-backend-sls-app-${opt:stage}.ServiceEndpoint}/api/v1/charging-sessions/update-interrupted-sessions"
+  # vpc:
+  #   securityGroupIds:
+  #     - ${ssm:/ev-backend/security_group}
+  #   subnetIds:
+  #     - ${ssm:/ev-backend/subnet_1}
+  #     - ${ssm:/ev-backend/subnet_2}
+  #     - ${ssm:/ev-backend/subnet_3}
+  #     - ${ssm:/ev-backend/subnet_4}
+  sequence-number-cron-job:
+    handler: dist/triggers/sequenceNumberCron.handler
+    layers:
+      - { Ref: PreBuiltLambdaLayer }
+    events:
+      - schedule:
+          name: sequence-number-cron-job-${opt:stage}
+          description: Trigger the Lambda function at 12:00 AM on April 1 every year [31 Mar 18:30:00 UTC]
+          rate: cron(30 18 31 3 ? *)
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - logs:CreateLogGroup
+          - logs:CreateLogStream
+          - logs:PutLogEvents
+        Resource: arn:aws:logs:*:*:/aws/lambda/sequence-number-cron-job-*
+    environment:
+      SEQUENCE_NUMBER_URL: "${cf:ev-backend-sls-app-${opt:stage}.ServiceEndpoint}/api/v1/settings/update/sequence-number"
+  # vpc:
+  #   securityGroupIds:
+  #     - ${ssm:/ev-backend/security_group}
+  #   subnetIds:
+  #     - ${ssm:/ev-backend/subnet_1}
+  #     - ${ssm:/ev-backend/subnet_2}
+  #     - ${ssm:/ev-backend/subnet_3}
+  #     - ${ssm:/ev-backend/subnet_4}
+  financial-year-cron-job:
+    handler: dist/triggers/financialYearCron.handler
+    layers:
+      - { Ref: PreBuiltLambdaLayer }
+    events:
+      - schedule:
+          name: financial-year-cron-job-${opt:stage}
+          description: Trigger the Lambda function at 12:00 AM on Jan 1 every year [ 31 Dec 18:30:00 UTC]
+          rate: cron(30 18 31 12 ? *)
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - logs:CreateLogGroup
+          - logs:CreateLogStream
+          - logs:PutLogEvents
+        Resource: arn:aws:logs:*:*:/aws/lambda/financial-year-cron-job-*
+    environment:
+      FINANCIAL_YEAR_URL: "${cf:ev-backend-sls-app-${opt:stage}.ServiceEndpoint}/api/v1/settings/update/financial-year"
+  verify_auth_challenge:
+    handler: dist/triggers/cognito/verify_auth_challenge.handler
+    timeout: 300
+    iamRoleStatementsInherit: true
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - "cognito-idp:AdminUserGlobalSignOut"
+          - "cognito-idp:AddCustomAttributes"
+          - "cognito-idp:AdminCreateUser"
+          - "cognito-idp:AdminSetUserPassword"
+          - "cognito-idp:AdminSetUserSettings"
+          - "cognito-idp:AdminAddUserToGroup"
+          - "cognito-idp:GetGroup"
+          - "cognito-idp:AdminGetUser"
+          - "cognito-idp:AdminConfirmSignUp"
+          - "cognito-idp:AdminEnableUser"
+          - "cognito-idp:AdminListUserAuthEvents"
+          - "cognito-idp:UpdateGroup"
+          - "cognito-idp:AdminDisableUser"
+          - "cognito-idp:AdminRemoveUserFromGroup"
+          - "cognito-idp:AdminResetUserPassword"
+        Resource: "*"
+    events:
+      - cognitoUserPool:
+          pool: ${self:custom.userPoolName}
+          trigger: VerifyAuthChallengeResponse
+          existing: true
+    # vpc:
+    #   securityGroupIds:
+    #     - ${ssm:/ev-backend/security_group}
+    #   subnetIds:
+    #     - ${ssm:/ev-backend/subnet_1}
+    #     - ${ssm:/ev-backend/subnet_2}
+    #     - ${ssm:/ev-backend/subnet_3}
+    #     - ${ssm:/ev-backend/subnet_4}
+
+  # firmware-upgrade:
+  #   handler: dist/triggers/firmware/firmwareUpgrade.handler
+  #   url: true
+  #   layers:
+  #     - { Ref: PreBuiltLambdaLayer }
+  #   vpc:
+  #     securityGroupIds:
+  #       - ${ssm:/ev-backend/firmware/security_group}
+  #     subnetIds:
+  #       - ${ssm:/ev-backend/subnet_1}
+  #       - ${ssm:/ev-backend/subnet_2}
+  #       - ${ssm:/ev-backend/subnet_3}
+  #       - ${ssm:/ev-backend/subnet_4}
+
+  lambda_version_clean:
+    handler: dist/triggers/lambda/lambda_version.handler
+    timeout: 600
+    url: true
+    events:
+      - schedule:
+          name: lambdaVersionClean-${opt:stage}
+          description: Trigger the Lambda function everyday 05:00 AM
+          rate: cron(0 5 * * ? *)
+    layers:
+      - { Ref: PreBuiltLambdaLayer }
+
+  pre_token_generation:
+    handler: dist/triggers/cognito/pre_token_generation.handler
+    layers:
+      - { Ref: PreBuiltLambdaLayer }
+    timeout: 300
+    events:
+      - cognitoUserPool:
+          pool: ${self:custom.userPoolName}
+          trigger: PreTokenGeneration
+          existing: true
+    # vpc:
+    #   securityGroupIds:
+    #     - ${ssm:/ev-backend/security_group}
+    #   subnetIds:
+    #     - ${ssm:/ev-backend/subnet_1}
+    #     - ${ssm:/ev-backend/subnet_2}
+    #     - ${ssm:/ev-backend/subnet_3}
+    #     - ${ssm:/ev-backend/subnet_4}
+
+  custom_email_notification:
+    handler: dist/triggers/cognito/custom_email_notification.handler
+    layers:
+      - { Ref: PreBuiltLambdaLayer }
+    timeout: 300
+    events:
+      - cognitoUserPool:
+          pool: ${self:custom.userPoolName}
+          trigger: CustomMessage
+          existing: true
+    # vpc:
+    #   securityGroupIds:
+    #     - ${ssm:/ev-backend/security_group}
+    #   subnetIds:
+    #     - ${ssm:/ev-backend/subnet_1}
+    #     - ${ssm:/ev-backend/subnet_2}
+    #     - ${ssm:/ev-backend/subnet_3}
+    #     - ${ssm:/ev-backend/subnet_4}
+
+  users_logo_s3_public_trigger:
+    handler: dist/triggers/s3/extract_users_cover_and_logo_details.handler
+    timeout: 300
+    events:
+      - s3:
+          bucket: ${self:custom.publicBucketName}
+          event: s3:ObjectCreated:*
+          rules:
+            - prefix: user_images/${opt:stage}/
+          existing: true
+    # vpc:
+    #   securityGroupIds:
+    #     - ${ssm:/ev-backend/security_group}
+    #   subnetIds:
+    #     - ${ssm:/ev-backend/subnet_1}
+    #     - ${ssm:/ev-backend/subnet_2}
+    #     - ${ssm:/ev-backend/subnet_3}
+    #     - ${ssm:/ev-backend/subnet_4}
+  stations_media_s3_public_trigger:
+    handler: dist/triggers/s3/extract_stations_media_details.handler
+    timeout: 300
+    events:
+      - s3:
+          bucket: ${self:custom.publicBucketName}
+          event: s3:ObjectCreated:*
+          rules:
+            - prefix: station_images/${opt:stage}/
+          existing: true
+    # vpc:
+    #   securityGroupIds:
+    #     - ${ssm:/ev-backend/security_group}
+    #   subnetIds:
+    #     - ${ssm:/ev-backend/subnet_1}
+    #     - ${ssm:/ev-backend/subnet_2}
+    #     - ${ssm:/ev-backend/subnet_3}
+    #     - ${ssm:/ev-backend/subnet_4}
+  users_logo_s3_private_trigger:
+    handler: dist/triggers/s3/extract_users_cover_and_logo_details.handler
+    timeout: 300
+    events:
+      - s3:
+          bucket: ${self:custom.privateBucketName}
+          event: s3:ObjectCreated:*
+          rules:
+            - prefix: user_images/${opt:stage}/
+          existing: true
+    # vpc:
+    #   securityGroupIds:
+    #     - ${ssm:/ev-backend/security_group}
+    #   subnetIds:
+    #     - ${ssm:/ev-backend/subnet_1}
+    #     - ${ssm:/ev-backend/subnet_2}
+    #     - ${ssm:/ev-backend/subnet_3}
+    #     - ${ssm:/ev-backend/subnet_4}
+  # firmware-upgrade:
+  #   handler: dist/triggers/firmware/firmwareUpgrade.handler
+  #   timeout: 12000
+  #   url: true
+  #   layers:
+  #     - { Ref: PreBuiltLambdaLayer }
+  #   vpc:
+  #     securityGroupIds:
+  #       - ${ssm:/ev-backend/firmware/security_group}
+  #     subnetIds:
+  #       - ${ssm:/ev-backend/subnet_1}
+  #       - ${ssm:/ev-backend/subnet_2}
+  #       - ${ssm:/ev-backend/subnet_3}
+  #       - ${ssm:/ev-backend/subnet_4}
+  serverHandler:
+    handler: dist/index.server
+    timeout: 600
+    # provisionedConcurrency: 1  # This is the place where the provisioned concurrency is configured. Based on the reuirement we can do configure on this.
+    events:
+      - http:
+          path: /
+          method: ANY
+          cors:
+            origin: "*"
+            headers: ${self:custom.allowed-headers}
+            allowCredentials: true
+      - http:
+          path: /api/v1/charging-points/triggerMessage
+          method: POST
+          cors:
+            origin: "*"
+            headers: ${self:custom.allowed-headers}
+            allowCredentials: true
+      - http:
+          path: /api/v1/wallet/payment/callback
+          method: POST
+          cors:
+            origin: "*"
+            headers: ${self:custom.allowed-headers}
+            allowCredentials: true
+      - http:
+          path: /api/v1/wallet/payment/razorpay/webhook
+          method: POST
+          cors:
+            origin: "*"
+            headers: ${self:custom.allowed-headers}
+            allowCredentials: true
+      - http:
+          path: /api/v1/wallet/payment/paytm/webhook
+          method: POST
+          cors:
+            origin: "*"
+            headers: ${self:custom.allowed-headers}
+            allowCredentials: true
+      - http:
+          path: /api/v1/auth/email/verify/{proxy+}
+          method: GET
+          cors:
+            origin: "*"
+            headers: ${self:custom.allowed-headers}
+            allowCredentials: true
+      - http:
+          path: /api/v1/auth/logout-all-device/{proxy+}
+          method: ANY
+          cors:
+            origin: "*"
+            headers: ${self:custom.allowed-headers}
+            allowCredentials: true
+          authorizer: ${self:custom.authorizer.cognito_authorizer}
+
+      - http:
+          path: /api/v1/auth/{proxy+}
+          method: POST
+          cors:
+            origin: "*"
+            headers: ${self:custom.allowed-headers}
+            allowCredentials: true
+
+      - http:
+          path: /api/v1/ocpp/{proxy+}
+          method: POST
+          cors:
+            origin: "*"
+            headers: ${self:custom.allowed-headers}
+            allowCredentials: true
+
+      - http:
+          path: /api/v1/tenant/{proxy+}
+          method: GET
+          cors:
+            origin: "*"
+            headers: ${self:custom.allowed-headers}
+            allowCredentials: true
+      - http:
+          path: /api/v1/generate-analytics
+          method: POST
+          cors:
+            origin: "*"
+            headers: ${self:custom.allowed-headers}
+            allowCredentials: true
+      - http:
+          path: /api/v1/charger-downtime
+          method: POST
+          cors:
+            origin: "*"
+            headers: ${self:custom.allowed-headers}
+            allowCredentials: true
+      - http:
+          path: /api/v1/teams/invoice-generate
+          method: POST
+          cors:
+            origin: "*"
+            headers: ${self:custom.allowed-headers}
+            allowCredentials: true
+      - http:
+          path: /api/v1/wallet/payment/status-update
+          method: POST
+          cors:
+            origin: "*"
+            headers: ${self:custom.allowed-headers}
+            allowCredentials: true
+      - http:
+          path: /api/v1/discover-stations/details/{proxy+}
+          method: GET
+          cors:
+            origin: "*"
+            headers: ${self:custom.allowed-headers}
+            allowCredentials: true
+      - http:
+          path: /api/v1/discover-stations/get_stations_enroute
+          method: POST
+          cors:
+            origin: "*"
+            headers: ${self:custom.allowed-headers}
+            allowCredentials: true
+      - http:
+          path: /api/v1/discover-stations/open_list
+          method: GET
+          cors:
+            origin: "*"
+            headers: ${self:custom.allowed-headers}
+            allowCredentials: true
+      - http:
+          path: /api/v1/discover-stations/open_single/{proxy+}
+          method: GET
+          cors:
+            origin: "*"
+            headers: ${self:custom.allowed-headers}
+            allowCredentials: true
+      - http:
+          path: /api/v1/messagequeue/{proxy+}
+          method: POST
+          cors:
+            origin: "*"
+            headers: ${self:custom.allowed-headers}
+            allowCredentials: true
+      - http:
+          path: api/v1/charging-sessions/update-interrupted-sessions
+          method: POST
+          cors:
+            origin: "*"
+            headers: ${self:custom.allowed-headers}
+            allowCredentials: true
+      - http:
+          path: /api/v1/settings/update/sequence-number
+          method: POST
+          cors:
+            origin: "*"
+            headers: ${self:custom.allowed-headers}
+            allowCredentials: true
+      - http:
+          path: /api/v1/settings/update/financial-year
+          method: POST
+          cors:
+            origin: "*"
+            headers: ${self:custom.allowed-headers}
+            allowCredentials: true
+      - http:
+          path: /{proxy+}
+          method: ANY
+          cors:
+            origin: "*"
+            headers: ${self:custom.allowed-headers}
+            allowCredentials: true
+          authorizer: ${self:custom.authorizer.cognito_authorizer}
+    # vpc:
+    #   securityGroupIds:
+    #     - ${ssm:/ev-backend/security_group}
+    #   subnetIds:
+    #     - ${ssm:/ev-backend/subnet_1}
+    #     - ${ssm:/ev-backend/subnet_2}
+    #     - ${ssm:/ev-backend/subnet_3}
+    #     - ${ssm:/ev-backend/subnet_4}
+
+    iamRoleStatementsName: "EVCognitoAdminRole${opt:stage}"
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - "cognito-idp:AdminUserGlobalSignOut"
+          - "cognito-idp:AddCustomAttributes"
+          - "cognito-idp:AdminCreateUser"
+          - "cognito-idp:AdminSetUserPassword"
+          - "cognito-idp:AdminSetUserSettings"
+          - "cognito-idp:AdminAddUserToGroup"
+          - "cognito-idp:GetGroup"
+          - "cognito-idp:AdminGetUser"
+          - "cognito-idp:AdminConfirmSignUp"
+          - "cognito-idp:AdminEnableUser"
+          - "cognito-idp:AdminListUserAuthEvents"
+          - "cognito-idp:UpdateGroup"
+          - "cognito-idp:AdminInitiateAuth"
+          - "cognito-idp:AdminDisableUser"
+          - "cognito-idp:AdminRemoveUserFromGroup"
+          - "cognito-idp:AdminResetUserPassword"
+          - "cognito-idp:AdminUpdateUserAttributes"
+          - "cognito-idp:ListUsers" # used to get the specific list of customers data to trigger email
+          - "cognito-idp:AdminDeleteUser"
+        Resource:
+          - !GetAtt cognitoUserPool.Arn
+
+      - Effect: Allow
+        Action:
+          - "sns:SetSMSAttributes"
+          - "sns:Publish"
+        Resource: "*"
+
+      - Effect: Allow
+        Action:
+          - "ses:SendEmail"
+          - "ses:SendRawEmail"
+        Resource: "*"
+
+      - Effect: "Allow"
+        Action:
+          - "s3:GetObject"
+          - "s3:PutObject"
+          - "s3:PutObjectAcl"
+          - "s3:AbortMultipartUpload"
+          - "s3:DeleteObject"
+        Resource: "arn:aws:s3:::${self:custom.publicBucketName}/*"
+
+    environment:
+      USER_POOL_ID: !Ref cognitoUserPool
+      USER_POOL_CLIENT_ID: !Ref cognitoClient
+
+plugins:
+  - serverless-plugin-typescript-express
+  - serverless-iam-roles-per-function
+  - serverless-esbuild
+  - serverless-prune-versions
+
+resources:
+  Resources: ${file(resources.yml)}

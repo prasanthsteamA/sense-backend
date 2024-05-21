@@ -1,0 +1,783 @@
+
+-- Below query used to create a team Hdr table for EZ - 232--
+
+CREATE TABLE public.saev_team_hdr (
+	id int4 NOT NULL GENERATED ALWAYS AS IDENTITY,
+	tenant_id varchar(255) NULL,
+	team_name varchar(4096) NULL,
+	is_deleted bool NULL DEFAULT false,
+	team_gst varchar(255) NULL,
+	payment_type varchar(255) NULL,
+	invoice_address varchar(4096) NULL,
+	created_at timestamp NULL,
+	updated_at timestamp NULL,
+	created_by varchar(255) NULL,
+	updated_by varchar(255) NULL,
+	billing_cycle int4 NULL,
+	CONSTRAINT team_hdr_pkey PRIMARY KEY (id)
+);
+
+-- Below query used to create a team Detail table for EZ - 232--
+
+CREATE TABLE public.saev_team_dtl(
+	id int4 NOT NULL GENERATED ALWAYS AS IDENTITY,
+	team_hdr_id int4 NULL,
+	customer_id varchar(100) NULL,
+	is_lead bool NULL DEFAULT false,
+	is_deleted bool NULL DEFAULT false,
+	created_at timestamp NULL,
+	updated_at timestamp NULL,
+	created_by varchar(255) NULL,
+	updated_by varchar(255) NULL,
+	CONSTRAINT team_dtl_pkey PRIMARY KEY (id)
+);
+
+-- To Add new column on charging station to track session against the team--
+ALTER TABLE public.saev_charging_session ADD team_id int4 NULL;
+
+-- Below query used to create a saev_vid table for EZ-125
+
+-- Sequence and defined type
+CREATE SEQUENCE IF NOT EXISTS saev_vid_id_seq;
+
+-- Table Definition
+CREATE TABLE "public"."saev_vid" (
+    "id" int8 NOT NULL DEFAULT nextval('saev_vid_id_seq'::regclass),
+    "user_id" varchar,
+    "created_at" timestamp,
+    "ocpp_charge_point_id" varchar,
+    "vrn" varchar,
+    "status" varchar,
+    "vid_tag" varchar NOT NULL,
+    "created_by" varchar,
+    "updated_at" timestamp,
+    "updated_by" varchar,
+    "tenant_id" varchar,
+    "connector_id" int4,
+    PRIMARY KEY ("id")
+);
+
+-- Below query used to get all the requests stored from ocpp log.
+
+-- Sequence and defined type
+CREATE SEQUENCE IF NOT EXISTS saev_ocpp_vid_tag_id_seq;
+
+-- Table Definition
+CREATE TABLE "public"."saev_ocpp_vid_tag" (
+    "id" int4 NOT NULL DEFAULT nextval('saev_ocpp_vid_tag_id_seq'::regclass),
+    "charge_point_id" varchar(255),
+    "connector_id" int4 NOT NULL,
+    "expires_at" timestamp,
+    "request_status" varchar(255),
+    "vid_tag" varchar(255),
+    PRIMARY KEY ("id")
+);
+-- To track the billing cycle of the team--
+ALTER TABLE public.saev_team_hdr ADD billing_cycle int4 NULL;
+
+
+-- Team Invoice Tracking EZ-289
+CREATE TABLE public.saev_team_invoice (
+	id int4 NOT NULL GENERATED ALWAYS AS IDENTITY,
+	tenant_id varchar(255) NULL,
+	team_id int4 NULL,
+	billing_month varchar(255) NULL,
+	billing_amount float8 NULL,
+	paid_on timestamp NULL,
+	invoice varchar(500) NULL,
+	payment_status varchar(255) NULL,
+	is_active bool NULL DEFAULT true,
+	created_at timestamp NULL,
+	updated_at timestamp NULL,
+	created_by varchar(255) NULL,
+	updated_by varchar(255) NULL,
+	CONSTRAINT team_invoice_pkey PRIMARY KEY (id)
+);
+
+-- Index to retriev data from saev_ocpp_meter_value table fastly.
+CREATE INDEX meter_value_index
+ON saev_ocpp_meter_value (measurand, transaction_id);
+
+-- Totrack the team invoice is generated or not in session table--
+ALTER TABLE public.saev_charging_session ADD team_inv_generated boolean NULL DEFAULT FALSE;
+
+
+-- TRIGGER FOR CHRONOLOGICAL--
+create or replace
+function update_session_log()
+returns trigger as $$
+begin
+    if NEW.status in ('Faulted','Finishing', 'SuspendedEVSE', 'SuspendedEV', 'Charging') then
+        insert
+    into
+    saev_charging_session_log (session_id,
+    charge_connector_id,
+    created_at,
+    created_by,
+    type,
+    charge_point_id,
+    connector_id,
+    text)
+        select
+    scsl.session_id,
+    scsl.charge_connector_id,
+    current_timestamp ,
+    scsl.created_by,
+    UPPER(new.status),
+    scsl.charge_point_id,
+    scsl.connector_id,
+    'Session ' || new.status
+from
+    saev_charging_session_log scsl
+where
+    scsl.charge_connector_id = NEW.charge_connector_id
+order by
+        id desc
+limit 1;
+end if;
+return new;
+end;
+$$ language plpgsql;
+
+
+CREATE TRIGGER on_connector_status_update
+AFTER UPDATE ON saev_charge_connector
+FOR EACH ROW
+EXECUTE FUNCTION update_session_log();
+
+-- To insert alias_name into saev_business_unit --
+ALTER TABLE saev_business_unit ADD COLUMN alias_name VARCHAR(255);
+
+-- To change the saev_ocpp_message_log column call, call_result, call_error from varchar(256) to varchar(100000)
+ALTER TABLE public.saev_ocpp_message_log
+    ALTER COLUMN "call" TYPE varchar(100000),
+    ALTER COLUMN "call_result" TYPE varchar(100000),
+    ALTER COLUMN "call_error" TYPE varchar(100000);
+
+-- To create a new field landmark in the saev_charge_point --
+ALTER TABLE public.saev_charge_point ADD landmark varchar(255) NULL;
+
+-- To add additonal columns in tariff_rule to separate AC and DC cost --
+ALTER TABLE saev_tariff_rule
+ADD COLUMN costperkwh_ac float8 DEFAULT 0.0,
+ADD COLUMN costperkwh_dc float8 DEFAULT 0.0,
+ADD COLUMN costperhour_ac float8 DEFAULT 0.0,
+ADD COLUMN costperhour_dc float8 DEFAULT 0.0;
+
+-- To migrate existing tariff_rule to the updated schema by copying values from costperkwh and costperhour --
+UPDATE saev_tariff_rule
+SET
+  costperkwh_ac = costperkwh,
+  costperkwh_dc = costperkwh,
+  costperhour_ac = costperhour,
+  costperhour_dc = costperhour
+WHERE
+  (costperkwh_ac IS NULL OR costperkwh_ac = 0.0) AND
+  (costperkwh_dc IS NULL OR costperkwh_dc = 0.0) AND
+  (costperhour_ac IS NULL OR costperhour_ac = 0.0) AND
+  (costperhour_dc IS NULL OR costperhour_dc = 0.0);
+
+-- Add the verify token against the customer_email verification.
+ALTER TABLE public.saev_user_otp ADD verify_token varchar(100) NULL;
+-- To add sequence to saev_ocpp_id_tag table --
+CREATE SEQUENCE saev_ocpp_id_tag_id_seq;
+
+-- Assigning the sequence to the id --
+ALTER TABLE "public"."saev_ocpp_id_tag"
+    ALTER COLUMN "id" SET DEFAULT nextval('saev_ocpp_id_tag_id_seq');
+
+-- Configuring the id tag sequence with min value and increment --
+-- Set the minimum value for the sequence
+ALTER SEQUENCE saev_ocpp_id_tag_id_seq MINVALUE 1;
+
+-- Set the increment for the sequence (optional)
+ALTER SEQUENCE saev_ocpp_id_tag_id_seq INCREMENT BY 1;
+
+-- Find the last greatest "id" value in the table
+DO $$ 
+DECLARE 
+    last_id integer;
+BEGIN 
+    SELECT MAX("id") INTO last_id FROM "public"."saev_ocpp_id_tag";
+    IF last_id IS NOT NULL THEN
+        -- Set the last value of the sequence to be the last greatest "id" value
+        PERFORM setval('saev_ocpp_id_tag_id_seq', last_id);
+    END IF;
+END $$;
+
+
+
+-- adding new column for saev_rfid table starts --
+-- Add the new column "isactive" with default value true --
+ALTER TABLE "public"."saev_rfid"
+ADD COLUMN "isactive" boolean DEFAULT true;
+
+-- Update all existing rows to set "isactive" to true --
+UPDATE "public"."saev_rfid"
+SET "isactive" = true;
+-- adding new columns for saev_rfid table ends --
+
+
+
+-- adding new column for saev_rfid table starts --
+-- Add the new column "id_type" with enum values and default value 'remote_id' --
+ALTER TABLE "public"."saev_rfid"
+ADD COLUMN "id_type" "public"."id_type_enum" DEFAULT 'remote_id';
+
+-- Define the ENUM type "id_type_enum" --
+CREATE TYPE "public"."id_type_enum" AS ENUM ('rfid', 'remote_id', 'vid');
+
+-- Update all existing rows to set "id_type" to 'remote_id' --
+UPDATE "public"."saev_rfid"
+SET "id_type" = 'remote_id';
+-- adding new column for saev_rfid table ends -
+
+-- to add the invoice number column in the session table
+ALTER TABLE public.saev_charging_session ADD inv_no varchar(256) NULL;
+
+-- Create the sequence for the id column (if not already created)
+CREATE SEQUENCE payment_id_seq;
+
+-- Create the table with the id column as the primary key and the sequence
+CREATE TABLE public.saev_payment (
+    id INT8 NOT NULL DEFAULT nextval('payment_id_seq') PRIMARY KEY,
+    result_status VARCHAR(255),
+    result_code VARCHAR(255),
+    result_msg VARCHAR(255),
+    txn_id VARCHAR(255),
+    bank_txn_id VARCHAR(255),
+    order_id VARCHAR(255) NOT NULL,
+    txn_amount VARCHAR(255),
+    txn_type VARCHAR(255),
+    gateway_name VARCHAR(255),
+    bank_name VARCHAR(255),
+    mid VARCHAR(255),
+    payment_mode VARCHAR(255),
+    refund_amt VARCHAR(255),
+    txn_date VARCHAR(255),
+    txn_token VARCHAR(255) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP,
+    wallet_transaction_id INT4
+    user_id VARCHAR(255),
+    tenant_id VARCHAR(255),
+    PRIMARY KEY ("id")
+);
+
+-- Used to Track the invoice Number on Session table. Common Sequence generator table
+
+
+CREATE TABLE public.saev_sequence_number (
+	id int4 NOT NULL GENERATED ALWAYS AS IDENTITY,
+	tenantid varchar(255) NULL,
+	prefix varchar(255) NULL,
+	finyear int4 NULL,
+	suffix varchar(255) NULL,
+	is_active bool NULL DEFAULT true,
+	created_at timestamp NULL,
+	updated_at timestamp NULL,
+	created_by varchar(255) NULL,
+	updated_by varchar(255) NULL,
+	reference varchar(256) NULL,
+	CONSTRAINT seq_no_pky PRIMARY KEY (id)
+);
+
+
+-- Sequence and defined type
+CREATE SEQUENCE IF NOT EXISTS saev_user_devices_id_seq;
+
+-- Table Definition
+CREATE TABLE "public"."saev_user_devices" (
+    "id" int4 NOT NULL DEFAULT nextval('saev_user_devices_id_seq'::regclass),
+    "user_id" varchar(100),
+    "tenant_id" varchar(100) NOT NULL,
+    "device_type" varchar(50) NOT NULL,
+    "device_token" varchar(255) NOT NULL,
+    "device_name" varchar(100),
+    "device_model" varchar(100),
+    "os_version" varchar(50),
+    "app_version" varchar(50),
+    "last_active_at" timestamp,
+    "created_at" timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updated_at" timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "other_metadata" jsonb,
+    PRIMARY KEY ("id")
+);
+
+-- Create the sequence for the id column
+CREATE SEQUENCE IF NOT EXISTS saev_notifications_id_seq;
+
+CREATE TABLE "public"."saev_notifications" (
+    "id" int8 NOT NULL DEFAULT nextval('saev_notifications_id_seq'::regclass),
+    "tenant_id" varchar(100) NOT NULL,
+    "user_id" varchar(100) NOT NULL,
+    "notification_title" text NOT NULL,
+    "notification_body" text NOT NULL,
+    "notification_type" varchar(20) NOT NULL,
+    "scheduled_type" varchar(20) NOT NULL,
+    "scheduled_time" timestamp,
+    "sent_at" timestamp,
+    "attachment_url" varchar(255),
+    "other_metadata" jsonb,
+    "created_by" varchar(100),
+    "updated_by" varchar(100),
+    "created_at" timestamp DEFAULT CURRENT_TIMESTAMP,
+    "updated_at" timestamp DEFAULT CURRENT_TIMESTAMP,
+    "notification_data" json,
+    PRIMARY KEY ("id")
+);
+
+-- To Store the sinature of the OTP to do Auto fill in Mobile app_version
+ALTER TABLE public.saev_user_otp ADD signature varchar(256) NULL;
+
+-- To add additional columns in the saev_rfid table --
+ALTER TABLE "public"."saev_rfid"
+ADD COLUMN "serial_number" varchar(255),
+ADD COLUMN "batch_number" varchar(100),
+ADD COLUMN "expiry_date" timestamp,
+ADD COLUMN "assigned_on" timestamp;
+
+-- is published Button on CP--
+ALTER TABLE public.saev_charge_point ADD ispublished boolean NULL DEFAULT FALSE;
+
+-- for tracking the status of the payment in wallet transaction --
+ALTER TABLE "public"."saev_wallet_transaction"
+ADD COLUMN "status" varchar(255) CHECK ("status"::text = ANY (ARRAY['pending', 'success', 'failed']));
+
+
+-- Function for getting station level tariff Data
+
+CREATE OR REPLACE FUNCTION find_station_level_tariff(station_id_input INT)
+RETURNS TABLE (id INT, name TEXT, type TEXT)
+AS $$
+BEGIN
+    RETURN QUERY
+    SELECT stp.id::INT, stp.name::TEXT, stp.type::TEXT
+    FROM saev_charge_station AS scs
+    LEFT JOIN saev_tariff_plan AS stp ON scs.tariff_id = stp.id
+    WHERE scs.id = station_id_input AND scs.tariff_id IS NOT NULL;
+END;
+$$
+LANGUAGE plpgsql;
+--- State Level tariff Data---
+CREATE OR REPLACE FUNCTION find_state_level_tariff(level_input INT)
+RETURNS TABLE (id INT, name TEXT, type TEXT)
+AS $$
+BEGIN
+    RETURN QUERY
+    SELECT stp.id::INT, stp.name::TEXT, stp.type::TEXT
+    FROM saev_level_item AS sli
+    LEFT JOIN saev_tariff_plan AS stp ON sli.tariff_id = stp.id
+    WHERE sli.id = level_input AND sli.tariff_id IS NOT NULL;
+END;
+$$
+LANGUAGE plpgsql;
+
+-- Region Level tariff Function:---
+
+CREATE OR REPLACE FUNCTION find_region_level_tariff(level_input INT)
+RETURNS TABLE (id INT, name TEXT, type TEXT)
+AS $$
+BEGIN
+    RETURN QUERY
+    SELECT stp.id::INT, stp.name::TEXT, stp.type::TEXT
+    FROM saev_level_item AS sli
+    LEFT JOIN saev_tariff_plan AS stp ON sli.tariff_id = stp.id
+    WHERE sli.id = level_input AND sli.tariff_id IS NOT NULL;
+END;
+$$
+LANGUAGE plpgsql;
+
+
+-- Countrty level tariff Function---
+
+
+CREATE OR REPLACE FUNCTION find_country_level_tariff(level_input INT)
+RETURNS TABLE (id INT, name TEXT, type TEXT)
+AS $$
+BEGIN
+    RETURN QUERY
+    SELECT stp.id::INT, stp.name::TEXT, stp.type::TEXT
+    FROM saev_level_item AS sli
+    LEFT JOIN saev_tariff_plan AS stp ON sli.tariff_id = stp.id
+    WHERE sli.id = level_input AND sli.tariff_id IS NOT NULL;
+END;
+$$
+LANGUAGE plpgsql;
+
+
+
+-- add start_meter_value,last_meter_value column --
+ALTER TABLE public.saev_charging_session
+ADD COLUMN start_meter_value int8;
+ALTER TABLE public.saev_charging_session
+ADD COLUMN last_meter_value int8;
+
+-- add the column for deducted_cost in sessions_table --
+ALTER TABLE public.saev_charging_session
+ADD COLUMN deducted_cost FLOAT;
+-- To add a column in station table
+ALTER TABLE saev_charge_station ADD COLUMN station_charger_type varchar(255);
+
+-- To add a column in station and connector table
+ALTER TABLE saev_charge_station ADD COLUMN reason text;
+ALTER TABLE saev_charge_connector ADD COLUMN reason text;
+
+-- To Add the reference_type Column in transaction table to filter proper records
+
+ALTER TABLE public.saev_wallet_transaction ADD reference_type varchar(255) NULL;
+
+ALTER TABLE saev_charge_point  ADD COLUMN discount_id int4;
+ALTER TABLE saev_charge_point  ADD COLUMN isdeleted boolean default false;
+ALTER TABLE saev_charge_point  ADD COLUMN tenantid varchar(200);
+ALTER TABLE saev_charging_session  ADD COLUMN discount_id int4;
+
+-- To Add constraint for change_point table 
+ALTER TABLE public.saev_charge_point ADD CONSTRAINT "Unique Charge Point Id" PRIMARY KEY (tenantid, ocpp_charge_point_id);
+
+-- To Add the is_temporary number flag
+alter table public.saev_vehicle 
+add column is_temporary boolean default false;
+
+-- To Add the temp register number date scenario.
+alter table public.saev_vehicle 
+add column temp_created_at timestamp;
+
+-- To Add the tenantid in vehicle table
+alter table public.saev_vehicle 
+add column tenantid varchar(255);
+
+-- To add new column last_meter_value_time and is_interrupted --
+ALTER TABLE saev_charging_session
+ADD COLUMN is_interrupted BOOLEAN DEFAULT FALSE,
+ADD COLUMN last_meter_value_time TIMESTAMP;
+
+-- To track the notifications (PUSH and SMS customizable by CPO) 
+
+CREATE TABLE public.saev_notification_hdr (
+	id int4 NOT NULL GENERATED ALWAYS AS IDENTITY,
+	tenantid varchar(200) NULL,
+	notify_type varchar(50) NULL,
+	notify_send_to varchar(100) NULL,
+	is_rule_based bool NULL DEFAULT false,
+	rule_config jsonb NULL,
+	mail_id jsonb NULL,
+	team_id jsonb NULL,
+	notify_schedule_type varchar(100) NULL,
+	notify_schedule timestamp NULL,
+	notify_content jsonb NULL,
+	notify_action jsonb NULL,
+	is_active bool NULL DEFAULT true,
+	is_deleted bool NULL DEFAULT false,
+	notify_status varchar(256) NULL,
+	created_at timestamp NULL,
+	created_by varchar(100) NULL,
+	updated_at timestamp NULL,
+	updated_by varchar(100) NULL,
+	CONSTRAINT saev_notification_hdr_pkey PRIMARY KEY (id)
+);
+
+--To add is_email_verified in user table 
+alter table public.saev_user 
+add column is_email_verified boolean default false;
+
+-- Add new column for Media url in notification table
+ALTER TABLE public.saev_notification_hdr ADD media_url varchar(1000) NULL;
+
+--To change datatypes of columns for role management
+ALTER TABLE public.saev_role ALTER COLUMN level_1 TYPE varchar USING level_1::varchar;
+ALTER TABLE public.saev_role ALTER COLUMN level_2 TYPE varchar USING level_2::varchar;
+ALTER TABLE public.saev_role ALTER COLUMN level_3 TYPE varchar USING level_3::varchar;
+ALTER TABLE public.saev_role ALTER COLUMN charge_station_id TYPE varchar USING charge_station_id::varchar;
+ALTER TABLE public.saev_role ALTER COLUMN charge_point_id TYPE varchar USING charge_point_id::varchar;
+ALTER TABLE public.saev_role ALTER COLUMN charge_connector_id TYPE varchar USING charge_connector_id::varchar;
+ALTER TABLE public.saev_role ALTER COLUMN effective_level_id TYPE varchar USING effective_level_id::varchar;
+
+
+
+ALTER TABLE public.saev_role ALTER COLUMN level_1 TYPE jsonb USING level_1::jsonb::jsonb;
+ALTER TABLE public.saev_role ALTER COLUMN level_2 TYPE jsonb USING level_2::jsonb::jsonb;
+ALTER TABLE public.saev_role ALTER COLUMN level_3 TYPE jsonb USING level_3::jsonb::jsonb;
+ALTER TABLE public.saev_role ALTER COLUMN charge_station_id TYPE jsonb USING charge_station_id::jsonb::jsonb;
+ALTER TABLE public.saev_role ALTER COLUMN charge_point_id TYPE jsonb USING charge_point_id::jsonb::jsonb;
+ALTER TABLE public.saev_role ALTER COLUMN charge_connector_id TYPE jsonb USING charge_connector_id::jsonb::jsonb;
+ALTER TABLE public.saev_role ALTER COLUMN effective_level_id TYPE jsonb USING effective_level_id::jsonb::jsonb;
+
+
+-- To Add the remarks Column in transaction table
+
+ALTER TABLE public.saev_wallet_transaction ADD COLUMN remarks text;
+
+
+
+-- To add new column invoice_id to saev_wallet_transaction and saev_payment table
+
+ALTER table saev_wallet_transaction ADD COLUMN invoice_id VARCHAR
+ALTER table saev_payment ADD COLUMN invoice_id VARCHAR
+
+
+
+
+-- Below query used to create a discount table for EZ-601
+
+CREATE TABLE public.saev_discount (
+	id serial4 NOT NULL,
+	"name" varchar(100) NOT NULL,
+	"type" varchar(20) NOT NULL,
+	discount_value numeric NOT NULL,
+	is_active bool NOT NULL,
+	is_fixed_time_period bool NULL,
+	tenant_id varchar NOT NULL,
+	createdat timestamp NULL,
+	createdby varchar NULL,
+	updatedat timestamp NULL,
+	updatedby varchar NULL,
+	start_datetime timestamp NULL,
+	end_datetime timestamp NULL,
+	config jsonb NULL,
+	available_to jsonb NULL,
+	is_deleted bool NULL,
+	config_parent_level jsonb NULL,
+	CONSTRAINT saev_discount_pkey PRIMARY KEY (id)
+);
+
+-- Below query used to add discount_id column in team hdr table for EZ-601
+ALTER TABLE saev_team_hdr
+ADD COLUMN discount_id jsonb;
+
+-- Below query used to add discount_id column in charge_connector table for EZ-601
+ALTER TABLE saev_charge_connector
+ADD COLUMN discount_id int4;
+
+-- Below query used to add discount_id column in charge_point table for EZ-601
+ALTER TABLE saev_charge_point
+ADD COLUMN discount_id int4;
+
+-- Below query used to add discount_id column in charge_station table for EZ-601
+ALTER TABLE saev_charge_station
+ADD COLUMN discount_id int4;
+
+-- Below query used to add discount_id column in level_item table for EZ-601
+ALTER TABLE saev_level_item
+ADD COLUMN discount_id int4;
+
+-- Below query used to add discount_info column in charging_session table for EZ-601
+ALTER TABLE saev_charging_session
+ADD COLUMN discount_info jsonb;
+
+-- Below query used to add amount_with_discount column in charging_session table for EZ-601
+ALTER TABLE saev_charging_session
+ADD COLUMN amount_with_discount float8;
+
+-- Below query used to add discount_amount column in charging_session table for EZ-601
+ALTER TABLE saev_charging_session
+ADD COLUMN discount_amount float8;
+
+
+
+--Below is the query to add contact_person and contact_number in saev_charge_station for EZ-1123
+ALTER TABLE saev_charge_station
+ADD COLUMN contact_person VARCHAR(255);
+
+ALTER TABLE saev_charge_station
+ADD COLUMN contact_number int4;
+
+-- to add suspicious session column in session table
+ALTER TABLE "public"."saev_charging_session"
+ADD COLUMN "is_suspicious" boolean DEFAULT false;
+
+
+
+--Below is the query to add station_owend in saev_charge_point
+ALTER TABLE saev_charge_point ADD COLUMN station_owned BOOLEAN DEFAULT FALSE;
+
+-- To add a column in session table
+ALTER TABLE saev_charging_session ADD COLUMN stop_reason varchar;
+
+
+-- To install citext in db
+CREATE EXTENSION IF NOT EXISTS citext;
+
+
+-- To create a table for master vehicle data
+CREATE TABLE public.saev_md_vehicle (
+  id int4 NOT NULL GENERATED ALWAYS AS IDENTITY,
+  tenantid varchar(200) NULL,
+  manufacturer varchar(200) NULL,
+  model citext,             -- Use citext data type and set it as unique
+  battery_capacity float8 NULL,
+  createdat timestamp NULL,
+  createdby varchar(200) NULL,
+  updatedat timestamp NULL,
+  updatedby varchar(200) NULL,
+  isdeleted bool NULL DEFAULT false,
+  CONSTRAINT saev_md_vehicle_pkey PRIMARY KEY (id)
+);
+-- To create a partial unique index that allows to create a unique constraint for vehicle model which is not deleted
+CREATE UNIQUE INDEX idx_unique_model_not_deleted ON public.saev_md_vehicle (model) WHERE isdeleted = false;
+
+
+
+
+
+-- To create a table for master charger data
+CREATE TABLE public.saev_md_charger (
+ id int4 NOT NULL GENERATED ALWAYS AS IDENTITY,
+tenantid varchar(200) NULL,
+oem varchar(200) NULL,
+model_name citext,         -- Use citext data type and set it as unique
+charger_type varchar(200) NULL,
+peak_power float8 NULL,
+dc_output_current float8 NULL,
+dc_output_voltage float8 NULL,
+ac_input_current float8 NULL,
+ac_input_voltage float8 NULL,
+no_of_connectors int4 NULL,
+createdat timestamp NULL,
+createdby varchar(200) NULL,
+updatedat timestamp NULL,
+updatedby varchar(200) NULL ,
+isdeleted bool NULL DEFAULT false,
+CONSTRAINT saev_md_charger_pkey PRIMARY KEY (id) )
+
+-- To create a partial unique index that allows to create a unique constraint for vehicle model which is not deleted
+CREATE UNIQUE INDEX idx_unique_model_name_not_deleted ON public.saev_md_charger (model_name) WHERE isdeleted = false;
+
+-- To create a table for master connector data
+CREATE TABLE public.saev_md_connector (
+id int4 NOT NULL GENERATED ALWAYS AS IDENTITY,
+charger_id int REFERENCES public.saev_md_charger(id),
+current_type varchar(100) NULL,
+connector_type varchar(200) NULL,
+peak_power float8 NULL,
+createdat timestamp NULL,
+createdby varchar(200) NULL,
+updatedat timestamp NULL,
+updatedby varchar(200) NULL ,
+isdeleted bool NULL DEFAULT false,
+connector_id INT4 NULL ,
+CONSTRAINT saev_md_connector_pkey PRIMARY KEY (id) )
+
+
+-- modified the module column for teams
+UPDATE public.saev_permission_master
+SET "name"='TEAMS:DELETE', displayname='teams', createdat='2023-06-07 01:45:07.537', updatedat='2023-06-07 01:45:07.537', "module"='TEAM_MANAGEMENT', actiontype='DELETE'
+WHERE id=49;
+
+UPDATE public.saev_permission_master
+SET "name"='TEAMS:CREATE', displayname='teams', createdat='2023-06-07 01:45:07.537', updatedat='2023-06-07 01:45:07.537', "module"='TEAM_MANAGEMENT', actiontype='CREATE'
+WHERE id=50;
+
+UPDATE public.saev_permission_master
+SET "name"='TEAMS:MODIFY', displayname='teams', createdat='2023-06-07 01:45:07.537', updatedat='2023-06-07 01:45:07.537', "module"='TEAM_MANAGEMENT', actiontype='MODIFY'
+WHERE id=51;
+
+UPDATE public.saev_permission_master
+SET "name"='TEAMS:VIEW', displayname='teams', createdat='2023-06-07 01:45:07.537', updatedat='2023-06-07 01:45:07.537', "module"='TEAM_MANAGEMENT', actiontype='VIEW'
+WHERE id=52;
+
+-- added column in sessions table to track interrupted session closed via mobile --
+ALTER TABLE "public"."saev_charging_session"
+ADD COLUMN "stopped_while_interrupted" bool DEFAULT false;
+
+
+-- To add columns in master data vehicle table
+ALTER TABLE saev_md_vehicle
+ADD COLUMN ccs_charging_speed float8 NULL,
+ADD COLUMN type2_charging_speed float8 NULL,
+ADD COLUMN battery_voltage float8 NULL;
+
+-- To add indexing in station --
+CREATE INDEX station_name_index
+ON saev_charge_station (name);
+
+-- To add indexing in session --
+CREATE INDEX charging_session_index
+ON saev_charging_session (SOURCE);
+
+-- To add column in connector table
+ALTER TABLE saev_charge_connector
+ADD COLUMN last_received_message_time TIMESTAMP NULL;
+
+-- To add column in station table
+ALTER TABLE saev_charge_station
+ADD COLUMN commissioned_date TIMESTAMP NULL;
+
+-- To add column in charge_point table
+ALTER TABLE saev_charge_point
+ADD COLUMN commissioned_date TIMESTAMP NULL;
+
+- To add column in charge_point table
+ALTER TABLE saev_charge_point
+ADD COLUMN meter_value_interval int4 NULL;
+
+- To add column in charge_point table
+ALTER TABLE saev_charge_point
+ADD COLUMN heart_beat_interval int4 NULL;
+
+-To updathe heart_beat_interval column with default value as 30
+UPDATE saev_charge_point SET heart_beat_interval = 30 
+
+-To updathe meter_value_interval column with default value as 30
+UPDATE saev_charge_point SET meter_value_interval = 30 
+
+-To add column in saev_setting table
+ALTER TABLE saev_setting
+ADD COLUMN time_zone_name VARCHAR(255);
+
+-- To track the Payment vendor in paymet table whether paytm or RazorPay
+ALTER TABLE public.saev_payment ADD payment_vendor varchar NULL;
+
+-- To track the payment type in moile
+alter table public.saev_setting  
+add column is_paytm boolean default false;
+
+alter table public.saev_setting  
+add column is_razor_pay boolean default true;
+
+-- To Add the index in Charge session table fo charge_point_id
+CREATE INDEX session_charge_point_id
+ON saev_charging_session (charge_point_id);
+
+-- TO track the Sequence number with Business Unit Level 
+
+ALTER TABLE public.saev_sequence_number ADD seq_key_id int4 NULL;
+
+ALTER TABLE public.saev_sequence_number ADD seq_key_value varchar NULL;
+
+-To add column in saev_charge_station table
+ALTER TABLE saev_charge_station
+ADD COLUMN total_revenue_no_tax FLOAT8;
+
+-To upadte the total_revenue_no_tax column
+UPDATE saev_charge_station
+SET
+   total_revenue_no_tax = CAST(subquery.total_revenue_no_tax AS FLOAT)
+FROM (
+    SELECT
+        scs.id,
+        SUM(cs.amount_before_tax) AS total_revenue_no_tax
+    FROM
+        saev_charging_session cs
+    JOIN
+        saev_charge_station scs ON cs.charge_station_id = scs.id    
+    GROUP BY
+        scs.id
+) AS subquery
+WHERE saev_charge_station.id = subquery.id;
+
+
+-- Used to restrict the double Stop request Handling
+
+ALTER TABLE public.saev_charging_session ADD is_stop_initiated bool NOT NULL DEFAULT false;
+
+-- to track the ocpp_transaction_id in the wallet_transaction table
+ALTER TABLE public.saev_wallet_transaction ADD ocpp_transaction_id int4 NULL;
+
+-- Below query used to insert accounting module View permission
+insert into saev_permission_master (id,name,displayname,createdat,updatedat,"module",actiontype
+) VALUES
+(60,'ACCOUNTS:VIEW','Accounts','now()','now()','ACCOUNTS','VIEW');
+
+-- TO add Vehicle is autocharge enabled or not
+ALTER TABLE public.saev_md_vehicle ADD is_autocharge_enabled boolean NULL DEFAULT false;

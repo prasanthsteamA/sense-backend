@@ -1,0 +1,171 @@
+PublicBucket:
+  Type: AWS::S3::Bucket
+  Properties:
+    BucketName: ${self:custom.publicBucketName}
+    # AccessControl: PublicRead
+    PublicAccessBlockConfiguration:
+      BlockPublicAcls: false
+      BlockPublicPolicy: false
+      IgnorePublicAcls: false
+      RestrictPublicBuckets: false
+    OwnershipControls:
+      Rules:
+      - ObjectOwnership: BucketOwnerPreferred
+    CorsConfiguration:
+      CorsRules:
+        - AllowedHeaders: ["*"]
+          AllowedMethods: ["PUT", "POST", "DELETE"]
+          AllowedOrigins: ["*"]
+    LifecycleConfiguration:
+      Rules:
+        - Id: ExpireAfter1Day
+          Status: Enabled
+          Prefix: export_csv/
+          ExpirationInDays: 1
+
+        - Id: DeleteAfter1Day
+          Status: Enabled
+          Prefix: rfid/
+          ExpirationInDays: 1
+
+PrivateBucket:
+  Type: AWS::S3::Bucket
+  Properties:
+    BucketName: ${self:custom.privateBucketName}
+    AccessControl: Private
+    PublicAccessBlockConfiguration:
+      BlockPublicAcls: false
+      BlockPublicPolicy: false
+      IgnorePublicAcls: true
+      RestrictPublicBuckets: true
+    OwnershipControls:
+      Rules:
+      - ObjectOwnership: BucketOwnerPreferred
+    CorsConfiguration:
+      CorsRules:
+        - AllowedHeaders: ["*"]
+          AllowedMethods: ["PUT", "POST", "DELETE"]
+          AllowedOrigins: ["*"]
+
+PublicBucketPolicy:
+  Type: AWS::S3::BucketPolicy
+  Properties:
+    Bucket: !Ref PublicBucket
+    PolicyDocument:
+      Statement:
+        - Effect: Allow
+          Principal: "*" # public access to access the bucket files
+          Action:
+            - s3:GetObject
+            - s3:PutObject
+            - s3:PutObjectAcl
+            - s3:DeleteObject
+          Resource:
+            - Fn::Join:
+                - ""
+                - - "arn:aws:s3:::"
+                  - !Ref PublicBucket
+                  - "/*"
+
+PrivateBucketPolicy:
+  Type: AWS::S3::BucketPolicy
+  Properties:
+    Bucket: !Ref PrivateBucket
+    PolicyDocument:
+      Statement:
+        - Effect: Allow
+          Principal: "*"
+          Action:
+            - s3:GetObject
+            - s3:PutObject
+          Resource:
+            - "arn:aws:s3:::${self:custom.privateBucketName}/*"
+            - "arn:aws:s3:::${self:custom.privateBucketName}"
+
+cognitoUserPool:
+  Type: AWS::Cognito::UserPool
+  Properties:
+    AliasAttributes:
+      - preferred_username
+      - email
+    UserPoolName: ${self:custom.userPoolName}
+    Schema:
+      - Name: tenantId
+        Mutable: false
+        AttributeDataType: String
+      - Name: userType
+        Mutable: false
+        AttributeDataType: String
+
+cognitoUserPoolDomain:
+  Type: AWS::Cognito::UserPoolDomain
+  Properties:
+    Domain: ${self:custom.domain_${opt:stage}}
+    UserPoolId: !Ref cognitoUserPool
+
+cognitoClient:
+  Type: AWS::Cognito::UserPoolClient
+  Properties:
+    ClientName: "EVBackendApi"
+    UserPoolId: !Ref cognitoUserPool
+    GenerateSecret: false
+    AccessTokenValidity: 1
+    IdTokenValidity: 1
+    TokenValidityUnits:
+      IdToken: "hours"
+    CallbackURLs:
+      - http://localhost:3000
+    LogoutURLs:
+      - http://localhost:3000/login
+    SupportedIdentityProviders:
+      - COGNITO
+    ExplicitAuthFlows:
+      - "ADMIN_NO_SRP_AUTH"
+    AllowedOAuthFlowsUserPoolClient: true
+    AllowedOAuthFlows:
+      - code
+    AllowedOAuthScopes:
+      - email
+      - openid
+      - profile
+      - aws.cognito.signin.user.admin
+      - phone
+
+SuperAdminGroup:
+  Type: AWS::Cognito::UserPoolGroup
+  Properties:
+    Description: "Only Superadmin will be here"
+    GroupName: "SuperAdmins"
+    Precedence: 0
+    UserPoolId: !Ref cognitoUserPool
+
+# CognitoUser: # this section used to create one user to the pool and super admin group.
+#     Type: AWS::Cognito::UserPoolUser
+#     Properties:
+#       Username: jayakumar+superadmin2 # Super admin email
+#       UserPoolId: !Ref cognitoUserPool
+#       DesiredDeliveryMediums:
+#         - EMAIL
+#       ForceAliasCreation: false
+#       MessageAction: SUPPRESS
+#       UserAttributes:
+#         - Name: email
+#           Value: jayakumar+superadmin2@steam-a.com
+     
+#       ValidationData:
+#         - Name: cognito:groups
+#           Value: SuperAdmins
+
+RabbitMQBroker:
+  Type: AWS::AmazonMQ::Broker
+  Properties:
+    AutoMinorVersionUpgrade: true
+    BrokerName: ${self:custom.messageBrokerName}
+    DeploymentMode: SINGLE_INSTANCE
+    EngineType: RABBITMQ
+    EngineVersion: 3.11.16
+    HostInstanceType: mq.t3.micro
+    PubliclyAccessible: true
+    Users:
+      - Password: '{{resolve:secretsmanager:steama-ev-rabbitmq-dev:SecretString:password}}'
+        Username: '{{resolve:secretsmanager:steama-ev-rabbitmq-dev:SecretString:username}}'
